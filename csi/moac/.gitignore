@@ -1,6 +1,10 @@
 /node_modules/
 /proto/
 /result
-/replica.js
-/pool.js
+/cache.js
 /nexus.js
+/node_operator.js
+/pool.js
+/pool_operator.js
+/replica.js
+/volume_operator.js

@@ -5,8 +5,7 @@
 
 'use strict';
 
-const { Client, KubeConfig } = require('kubernetes-client');
-const Request = require('kubernetes-client/backends/request');
+const { KubeConfig } = require('@kubernetes/client-node');
 const yargs = require('yargs');
 const logger = require('./logger');
 const Registry = require('./registry');
@@ -20,30 +19,27 @@ const { MessageBus } = require('./nats');
 
 const log = new logger.Logger();
 
-// Read k8s client configuration, in order to be able to connect to k8s api
-// server, either from a file or from environment and return k8s client
-// object.
+// Load k8s config file.
 //
 // @param   {string} [kubefile]    Kube config file.
 // @returns {object}  k8s client object.
-function createK8sClient (kubefile) {
-  var backend;
+function createKubeConfig (kubefile) {
+  var kubeConfig = new KubeConfig();
   try {
-    if (kubefile != null) {
+    if (kubefile) {
       log.info('Reading k8s configuration from file ' + kubefile);
-      const kubeconfig = new KubeConfig();
-      kubeconfig.loadFromFile(kubefile);
-      backend = new Request({ kubeconfig });
+      kubeConfig.loadFromFile(kubefile);
+    } else {
+      kubeConfig.loadFromDefault();
     }
-    return new Client({ backend });
   } catch (e) {
     log.error('Cannot get k8s client configuration: ' + e);
     process.exit(1);
   }
+  return kubeConfig;
 }
 
 async function main () {
-  var client;
   var registry;
   var volumes;
   var poolOper;
@@ -53,6 +49,7 @@ async function main () {
   var csiServer;
   var apiServer;
   var messageBus;
+  var kubeConfig;
 
   const opts = yargs
     .options({
@@ -152,17 +149,15 @@ async function main () {
 
   if (!opts.s) {
     // Create k8s client and load openAPI spec from k8s api server
-    client = createK8sClient(opts.kubeconfig);
-    log.debug('Loading openAPI spec from the server');
-    await client.loadSpec();
+    kubeConfig = createKubeConfig(opts.kubeconfig);
 
     // Start k8s operators
-    nodeOper = new NodeOperator(opts.namespace);
-    await nodeOper.init(client, registry);
+    nodeOper = new NodeOperator(opts.namespace, kubeConfig, registry);
+    await nodeOper.init(kubeConfig);
     await nodeOper.start();
 
-    poolOper = new PoolOperator(opts.namespace);
-    await poolOper.init(client, registry);
+    poolOper = new PoolOperator(opts.namespace, kubeConfig, registry);
+    await poolOper.init(kubeConfig);
     await poolOper.start();
   }
 
@@ -170,8 +165,8 @@ async function main () {
   volumes.start();
 
   if (!opts.s) {
-    volumeOper = new VolumeOperator(opts.namespace);
-    await volumeOper.init(client, volumes);
+    volumeOper = new VolumeOperator(opts.namespace, kubeConfig, volumes);
+    await volumeOper.init(kubeConfig);
     await volumeOper.start();
   }
 
