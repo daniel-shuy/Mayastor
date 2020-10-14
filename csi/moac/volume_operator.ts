@@ -54,7 +54,7 @@ import {
   CustomResource,
   CustomResourceCache,
   CustomResourceMeta,
-} from './cache';
+} from './watcher';
 
 const RESOURCE_NAME: string = 'mayastorvolume';
 const crdVolume = yaml.safeLoad(
@@ -87,23 +87,26 @@ function protocolFromString(val: string): Protocol {
 enum State {
   Unknown = 'unknown',
   Online = 'online',
-  Offline = 'offline',
   Degraded = 'degraded',
   Faulted = 'faulted',
-  Failed = 'failed',
+  Pending = 'pending',
+  Offline = 'offline',
+  Error = 'error',
 }
 
 function stateFromString(val: string): State {
   if (val == State.Online) {
     return State.Online;
-  } else if (val == State.Offline) {
-    return State.Offline;
   } else if (val == State.Degraded) {
     return State.Degraded;
   } else if (val == State.Faulted) {
     return State.Faulted;
-  } else if (val == State.Failed) {
-    return State.Failed;
+  } else if (val == State.Pending) {
+    return State.Pending;
+  } else if (val == State.Offline) {
+    return State.Offline;
+  } else if (val == State.Error) {
+    return State.Error;
   } else {
     return State.Unknown;
   }
@@ -142,7 +145,7 @@ type VolumeStatus = {
 };
 
 // Object defines properties of node resource.
-class VolumeResource extends CustomResource {
+export class VolumeResource extends CustomResource {
   apiVersion?: string;
   kind?: string;
   metadata: CustomResourceMeta;
@@ -187,7 +190,9 @@ class VolumeResource extends CustomResource {
           else if (a.uri > b.uri) return 1;
           else return 0;
         }),
-        nexus: status.nexus
+      }
+      if (status.nexus) {
+        this.status.nexus = status.nexus;
       }
     }
   }
@@ -203,7 +208,7 @@ class VolumeResource extends CustomResource {
 }
 
 // Volume operator managing volume k8s custom resources.
-class VolumeOperator {
+export class VolumeOperator {
   namespace: string;
   volumes: any; // Volume manager
   eventStream: any; // A stream of node, replica and nexus events.
@@ -269,7 +274,7 @@ class VolumeOperator {
     const uuid = ev.object.uuid;
 
     if (ev.eventType === 'new' || ev.eventType === 'mod') {
-      const origObj = this.watcher.get(name);
+      const origObj = this.watcher.get(uuid);
       const spec = <VolumeSpec> {
         replicaCount: ev.object.replicaCount,
         preferredNodes: _.clone(ev.object.preferredNodes),
@@ -283,7 +288,12 @@ class VolumeOperator {
       if (origObj !== undefined) {
         await this._updateSpec(uuid, origObj, spec);
       } else if (ev.eventType === 'new') {
-        await this._createResource(uuid, spec);
+        try {
+          await this._createResource(uuid, spec);
+        } catch (err) {
+          log.error(`Failed to create volume resource "${uuid}": ${err}`);
+          return;
+        }
       }
       await this._updateStatus(uuid, status);
     } else if (ev.eventType === 'del') {
@@ -333,20 +343,15 @@ class VolumeOperator {
   // @param spec       New volume spec.
   //
   async _createResource (uuid: string, spec: VolumeSpec) {
-    try {
-      await this.watcher.create({
-        apiVersion: 'openebs.io/v1alpha1',
-        kind: 'MayastorVolume',
-        metadata: {
-          name: uuid,
-          namespace: this.namespace
-        },
-        spec
-      });
-    } catch (err) {
-      log.error(`Failed to create volume resource "${uuid}": ${err}`);
-      return;
-    }
+    await this.watcher.create({
+      apiVersion: 'openebs.io/v1alpha1',
+      kind: 'MayastorVolume',
+      metadata: {
+        name: uuid,
+        namespace: this.namespace
+      },
+      spec
+    });
   }
 
   // Update properties of k8s CRD object or create it if it does not exist.
@@ -357,7 +362,7 @@ class VolumeOperator {
   //
   async _updateSpec (uuid: string, origObj: VolumeResource, spec: VolumeSpec) {
     try {
-      await this.watcher.update(name, (orig: VolumeResource) => {
+      await this.watcher.update(uuid, (orig: VolumeResource) => {
         // Update object only if it has really changed
         if (_.isEqual(origObj.spec, spec)) {
           return;
@@ -383,7 +388,7 @@ class VolumeOperator {
   //
   async _updateStatus (uuid: string, status: VolumeStatus) {
     try {
-      await this.watcher.updateStatus(name, (orig: VolumeResource) => {
+      await this.watcher.updateStatus(uuid, (orig: VolumeResource) => {
         if (_.isEqual(orig.status, status)) {
           // avoid unnecessary status updates
           return;
@@ -406,7 +411,7 @@ class VolumeOperator {
   // Set state and reason not touching the other status fields.
   async _updateState (uuid: string, state: State, reason: string) {
     try {
-      await this.watcher.updateStatus(name, (orig: VolumeResource) => {
+      await this.watcher.updateStatus(uuid, (orig: VolumeResource) => {
         if (orig.status?.state === state && orig.status?.reason === reason) {
           // avoid unnecessary status updates
           return;
@@ -442,6 +447,7 @@ class VolumeOperator {
 
   // Stop listening for watcher and node events and reset the cache
   async stop () {
+    this.watcher.stop();
     this.watcher.removeAllListeners();
     if (this.eventStream) {
       this.eventStream.destroy();
@@ -454,15 +460,18 @@ class VolumeOperator {
   // @param watcher   k8s volume resource cache.
   //
   _bindWatcher (watcher: CustomResourceCache<VolumeResource>) {
-    var self = this;
     watcher.on('new', (obj: VolumeResource) => {
-      self.workq.push(obj, self._importVolume.bind(self));
+      this.workq.push(obj, this._importVolume.bind(this));
     });
     watcher.on('mod', (obj: VolumeResource) => {
-      self.workq.push(obj, self._modifyVolume.bind(self));
+      this.workq.push(obj, this._modifyVolume.bind(this));
     });
     watcher.on('del', (obj: VolumeResource) => {
-      self.workq.push(obj.metadata.name, self._destroyVolume.bind(self));
+      // most likely it was not user but us (the operator) who deleted
+      // the resource. So check if it really exists first.
+      if (this.volumes.get(obj.metadata.name)) {
+        this.workq.push(obj.metadata.name, this._destroyVolume.bind(this));
+      }
     });
   }
 
@@ -481,7 +490,7 @@ class VolumeOperator {
       log.error(
         `Failed to import volume "${uuid}" based on new resource: ${err}`
       );
-      await this._updateState(uuid, State.Failed, err.toString());
+      await this._updateState(uuid, State.Error, err.toString());
     }
   }
 
@@ -526,5 +535,3 @@ class VolumeOperator {
     }
   }
 }
-
-module.exports = VolumeOperator;

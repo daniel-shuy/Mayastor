@@ -1,7 +1,6 @@
 // Pool operator monitors k8s pool resources (desired state). It creates
 // and destroys pools on storage nodes to reflect the desired state.
 
-import assert from 'assert';
 import * as fs from 'fs';
 import * as _ from 'lodash';
 import * as path from 'path';
@@ -13,7 +12,7 @@ import {
   CustomResource,
   CustomResourceCache,
   CustomResourceMeta,
-} from './cache';
+} from './watcher';
 
 const yaml = require('js-yaml');
 const log = require('./logger').Logger('pool-operator');
@@ -28,33 +27,38 @@ const crdPool = yaml.safeLoad(
   fs.readFileSync(path.join(__dirname, '/crds/mayastorpool.yaml'), 'utf8')
 );
 
+// Set of possible pool states. Some of them come from mayastor and
+// offline, pending and error are deduced in the control plane itself.
 enum PoolState {
   Unknown = "unknown",
   Online = "online",
-  Offline = "offline",
   Degraded = "degraded",
+  Faulted = "faulted",
+  Offline = "offline",
   Pending = "pending",
-  Failed = "failed",
+  Error = "error",
 }
 
 function poolStateFromString(val: string): PoolState {
   if (val === PoolState.Online) {
     return PoolState.Online;
-  } else if (val === PoolState.Offline) {
-    return PoolState.Offline;
   } else if (val === PoolState.Degraded) {
     return PoolState.Degraded;
+  } else if (val === PoolState.Faulted) {
+    return PoolState.Faulted;
+  } else if (val === PoolState.Offline) {
+    return PoolState.Offline;
   } else if (val === PoolState.Pending) {
     return PoolState.Pending;
-  } else if (val === PoolState.Failed) {
-    return PoolState.Failed;
+  } else if (val === PoolState.Error) {
+    return PoolState.Error;
   } else {
     return PoolState.Unknown;
   }
 }
 
 // Object defines properties of pool resource.
-class PoolResource extends CustomResource {
+export class PoolResource extends CustomResource {
   apiVersion?: string;
   kind?: string;
   metadata: CustomResourceMeta;
@@ -70,6 +74,7 @@ class PoolResource extends CustomResource {
     used?: number
   };
 
+  // Create and validate pool custom resource.
   constructor(cr: CustomResource) {
     super();
     this.apiVersion = cr.apiVersion;
@@ -103,6 +108,7 @@ class PoolResource extends CustomResource {
     };
   }
 
+  // Extract name of the pool from the resource metadata.
   getName(): string {
     if (this.metadata.name === undefined) {
       throw Error("Resource object does not have a name")
@@ -114,7 +120,7 @@ class PoolResource extends CustomResource {
 
 // Pool operator tries to bring the real state of storage pools on mayastor
 // nodes in sync with mayastorpool custom resources in k8s.
-class PoolOperator {
+export class PoolOperator {
   namespace: string;
   watcher: CustomResourceCache<PoolResource>; // k8s resource watcher for pools
   registry: any; // registry containing info about mayastor nodes
@@ -186,7 +192,7 @@ class PoolOperator {
 
   // Handler for new/mod/del pool events
   //
-  // @param {object} ev       Pool event as received from event stream.
+  // @param ev       Pool event as received from event stream.
   //
   async _onPoolEvent (ev: any) {
     const name: string = ev.object.name;
@@ -214,7 +220,7 @@ class PoolOperator {
   // Either the node is new or came up after an outage - check that we
   // don't have any pending pools waiting to be created on it.
   //
-  // @param {string} nodeName    Name of the new node.
+  // @param nodeName    Name of the new node.
   //
   async _onNodeSyncEvent (nodeName: string) {
     log.debug(`Syncing pool records for node "${nodeName}"`);
@@ -229,7 +235,7 @@ class PoolOperator {
 
   // Handler for new/del replica events
   //
-  // @param {object} ev       Replica event as received from event stream.
+  // @param ev       Replica event as received from event stream.
   //
   async _onReplicaEvent (ev: any) {
     const pool = ev.object.pool;
@@ -238,6 +244,7 @@ class PoolOperator {
 
   // Stop the events, destroy event stream and reset resource cache.
   stop () {
+    this.watcher.stop();
     this.watcher.removeAllListeners();
     if (this.eventStream) {
       this.eventStream.destroy();
@@ -250,15 +257,16 @@ class PoolOperator {
   // @param watcher   k8s pool resource watcher.
   //
   _bindWatcher (watcher: CustomResourceCache<PoolResource>) {
-    var self = this;
     watcher.on('new', (resource: PoolResource) => {
-      self.workq.push(resource, self._createPool.bind(self));
+      this.workq.push(resource, this._createPool.bind(this));
     });
     watcher.on('mod', (resource: PoolResource) => {
-      self.workq.push(resource, self._modifyPool.bind(self));
+      this.workq.push(resource, this._modifyPool.bind(this));
     });
     watcher.on('del', (resource: PoolResource) => {
-      self.workq.push(resource, self._destroyPool.bind(self));
+      this.workq.push(resource, async (arg: PoolResource) => {
+        await this._destroyPool(arg.getName());
+      });
     });
   }
 
@@ -302,14 +310,14 @@ class PoolOperator {
       pool = await node.createPool(name, resource.spec.disks);
     } catch (err) {
       log.error(`Failed to create pool "${name}": ${err}`);
-      await this._updateResourceProps(name, PoolState.Failed, err.toString());
+      await this._updateResourceProps(name, PoolState.Error, err.toString());
     }
   }
 
   // Remove the pool from internal state and if it exists destroy it.
   // Does not throw - only logs an error.
   //
-  // @param {string} name   Name of the pool to destroy.
+  // @param name   Name of the pool to destroy.
   //
   async _destroyPool (name: string) {
     var pool = this.registry.getPool(name);
@@ -327,7 +335,7 @@ class PoolOperator {
   // operator's state should reflect the k8s state, so we make the change
   // only at operator level and log a warning message.
   //
-  // @param {string} newPool   New pool parameters.
+  // @param newPool   New pool parameters.
   //
   async _modifyPool (resource: PoolResource) {
     const name = resource.getName();
@@ -353,7 +361,7 @@ class PoolOperator {
   // NOTE: This method does not throw if the update fails as there is nothing
   // we can do if it fails. Though it logs an error message.
   //
-  // @param {object} pool      Pool object.
+  // @param pool      Pool object.
   //
   async _updateResource (pool: any) {
     var name = pool.name;
@@ -380,7 +388,6 @@ class PoolOperator {
       pool.capacity,
       pool.used,
     );
-    await this._updateFinalizer(name, pool.replicas.length > 0);
   }
 
   // Update status properties of k8s CRD object.
@@ -421,9 +428,11 @@ class PoolOperator {
         let resource: PoolResource = _.cloneDeep(orig);
         resource.status = {
           state: state,
-          reason: reason || '',
-          disks: disks || [],
+          reason: reason || ''
         };
+        if (disks != null) {
+          resource.status.disks = disks;
+        }
         if (capacity != null) {
           resource.status.capacity = capacity;
         }
@@ -453,5 +462,3 @@ class PoolOperator {
     }
   }
 }
-
-module.exports = PoolOperator;

@@ -16,7 +16,7 @@ import {
   CustomResource,
   CustomResourceCache,
   CustomResourceMeta,
-} from './cache';
+} from './watcher';
 
 const yaml = require('js-yaml');
 const EventStream = require('./event_stream');
@@ -36,7 +36,7 @@ enum NodeState {
 }
 
 // Object defines properties of node resource.
-class NodeResource extends CustomResource {
+export class NodeResource extends CustomResource {
   apiVersion?: string;
   kind?: string;
   metadata: CustomResourceMeta;
@@ -71,15 +71,14 @@ class NodeResource extends CustomResource {
   }
 }
 
-class NodeOperator {
+export class NodeOperator {
   watcher: CustomResourceCache<NodeResource>; // k8s resource watcher for nodes
   registry: any;
   namespace: string;
   workq: any; // for serializing node operations
   eventStream: any; // events from the registry
 
-  // init() is decoupled from constructor because tests do their own
-  // initialization of the object.
+  // Create node operator object.
   //
   // @param namespace   Namespace the operator should operate on.
   // @param kubeConfig  KubeConfig.
@@ -120,34 +119,31 @@ class NodeOperator {
   // @param {object} watcher   k8s node resource watcher.
   //
   _bindWatcher (watcher: CustomResourceCache<NodeResource>) {
-    var self = this;
     watcher.on('new', (obj: NodeResource) => {
-      if (obj.metadata)
-      self.registry.addNode(obj.metadata.name, obj.spec.grpcEndpoint);
+      if (obj.metadata) {
+        this.registry.addNode(obj.metadata.name, obj.spec.grpcEndpoint);
+      }
     });
     watcher.on('del', (obj: NodeResource) => {
-      self.registry.removeNode(obj.metadata.name);
+      this.registry.removeNode(obj.metadata.name);
     });
   }
 
   // Start node operator's watcher loop.
   async start () {
-    var self = this;
-
     // install event handlers to follow changes to resources.
-    self._bindWatcher(self.watcher);
-    await self.watcher.start();
+    this._bindWatcher(this.watcher);
+    await this.watcher.start();
 
     // This will start async processing of node events.
-    self.eventStream = new EventStream({ registry: self.registry });
-    self.eventStream.on('data', async (ev: any) => {
+    this.eventStream = new EventStream({ registry: this.registry });
+    this.eventStream.on('data', async (ev: any) => {
       if (ev.kind !== 'node') return;
-      await self.workq.push(ev, self._onNodeEvent.bind(self));
+      await this.workq.push(ev, this._onNodeEvent.bind(this));
     });
   }
 
   async _onNodeEvent (ev: any) {
-    var self = this;
     const name = ev.object.name;
     if (ev.eventType === 'new' || ev.eventType === 'mod') {
       const grpcEndpoint = ev.object.endpoint;
@@ -162,7 +158,7 @@ class NodeOperator {
         ev.object.isSynced() ? NodeState.Online : NodeState.Offline,
       );
     } else if (ev.eventType === 'del') {
-      await self._deleteResource(ev.object.name);
+      await this._deleteResource(ev.object.name);
     } else {
       assert.strictEqual(ev.eventType, 'sync');
     }
@@ -253,7 +249,8 @@ class NodeOperator {
   }
 
   // Stop listening for watcher and node events and reset the cache
-  async stop () {
+  stop () {
+    this.watcher.stop();
     this.watcher.removeAllListeners();
     if (this.eventStream) {
       this.eventStream.destroy();
@@ -261,5 +258,3 @@ class NodeOperator {
     }
   }
 }
-
-module.exports = NodeOperator;

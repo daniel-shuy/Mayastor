@@ -115,13 +115,13 @@ async function main () {
     if (csiServer) csiServer.undoReady();
     if (apiServer) apiServer.stop();
     if (!opts.s) {
-      if (volumeOper) await volumeOper.stop();
+      if (volumeOper) volumeOper.stop();
     }
     if (volumes) volumes.stop();
     if (!opts.s) {
-      if (poolOper) await poolOper.stop();
+      if (poolOper) poolOper.stop();
       if (csiNodeOper) await csiNodeOper.stop();
-      if (nodeOper) await nodeOper.stop();
+      if (nodeOper) nodeOper.stop();
     }
     if (messageBus) messageBus.stop();
     if (registry) registry.close();

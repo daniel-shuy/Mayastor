@@ -49,26 +49,29 @@ class MessageBus {
     return this.connected;
   }
 
+  // The method is async but returns immediately.
+  // However it's up to caller if she wants to wait for it.
   _connect () {
+    var self = this;
     log.debug(`Connecting to NATS at "${this.endpoint}" ...`);
     if (this.timeout) clearTimeout(this.timeout);
     assert(!this.nc);
-    this.nc = nats.connect({
+    nats.connect({
       servers: [`nats://${this.endpoint}`]
-    });
-    var self = this;
-    this.nc.on('connect', () => {
-      log.info(`Connected to NATS message bus at "${this.endpoint}"`);
-      self.connected = true;
-      self._subscribe();
-    });
-    this.nc.on('error', (err) => {
-      log.error(`${err}`);
-      self._disconnect();
-      log.debug(`Reconnecting after ${self.reconnectDelay}ms`);
-      // reconnect but give it some time to recover to prevent spinning in loop
-      self.timeout = setTimeout(self._connect.bind(self), self.reconnectDelay);
-    });
+    })
+      .then((nc) => {
+        log.info(`Connected to NATS message bus at "${this.endpoint}"`);
+        self.nc = nc;
+        self.connected = true;
+        self._subscribe();
+      })
+      .catch((err) => {
+        log.error(`${err}`);
+        self._disconnect();
+        log.debug(`Reconnecting after ${self.reconnectDelay}ms`);
+        // reconnect but give it some time to recover to prevent spinning in loop
+        self.timeout = setTimeout(self._connect.bind(self), self.reconnectDelay);
+      });
   }
 
   _disconnect () {

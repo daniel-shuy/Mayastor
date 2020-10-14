@@ -24,7 +24,7 @@ const volumeOperator = require('./volume_operator_test.js');
 const restApi = require('./rest_api_test.js');
 const csiTest = require('./csi_test.js');
 
-logger.setLevel('debug');
+logger.setLevel('silly');
 
 // Function form for terminating assertion properties to make JS linter happy
 chai.use(dirtyChai);
