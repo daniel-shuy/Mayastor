@@ -84,24 +84,24 @@ class MessageBus {
   }
 
   _parsePayload (msg) {
-    if (typeof (msg.data) !== 'string') {
-      log.error(`Invalid payload in ${msg.subject} message: not a string`);
-      return;
-    }
+    const sc = nats.StringCodec();
     try {
-      return JSON.parse(msg.data);
+      return JSON.parse(sc.decode(msg.data));
     } catch (e) {
       log.error(`Invalid payload in ${msg.subject} message: not a JSON`);
     }
   }
 
   _subscribe () {
-    this.nc.subscribe('register', (err, msg) => {
-      if (err) {
-        log.error(`Error receiving a registration message: ${err}`);
-        return;
-      }
-      const data = this._parsePayload(msg);
+    const registerSub = this.nc.subscribe('register');
+    this._registerHandler(registerSub);
+    const deregisterSub = this.nc.subscribe('deregister');
+    this._deregisterHandler(deregisterSub);
+  }
+
+  async _registerHandler (sub) {
+    for await (const m of sub) {
+      const data = this._parsePayload(m);
       if (!data) {
         return;
       }
@@ -117,14 +117,12 @@ class MessageBus {
       }
       log.trace(`"${id}" with "${ep}" requested registration`);
       this.registry.addNode(id, ep);
-    });
+    }
+  }
 
-    this.nc.subscribe('deregister', (err, msg) => {
-      if (err) {
-        log.error(`Error receiving a deregistration message: ${err}`);
-        return;
-      }
-      const data = this._parsePayload(msg);
+  async _deregisterHandler (sub) {
+    for await (const m of sub) {
+      const data = this._parsePayload(m);
       if (!data) {
         return;
       }
@@ -135,7 +133,7 @@ class MessageBus {
       }
       log.trace(`"${id}" requested deregistration`);
       this.registry.removeNode(id);
-    });
+    }
   }
 }
 

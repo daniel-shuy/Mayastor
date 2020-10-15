@@ -5,7 +5,7 @@ const expect = require('chai').expect;
 const sinon = require('sinon');
 const sleep = require('sleep-promise');
 const { KubeConfig } = require('@kubernetes/client-node');
-const { CustomResourceCache } = require('../cache');
+const { CustomResourceCache } = require('../watcher');
 
 // slightly modified cache tunings not to wait too long when testing things
 const RESTART_DELAY_MS = 300;

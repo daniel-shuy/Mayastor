@@ -368,6 +368,8 @@ module.exports = function () {
         stubs = arg;
         stubs.get.returns(volumeResource);
       });
+      const getVolumeStub = sinon.stub(volumes, 'get');
+      getVolumeStub.returns({ uuid: UUID });
       // trigger "del" event
       oper.watcher.emit('del', volumeResource);
       // give event callbacks time to propagate
@@ -391,6 +393,8 @@ module.exports = function () {
         stubs = arg;
         stubs.get.returns(volumeResource);
       });
+      const getVolumeStub = sinon.stub(volumes, 'get');
+      getVolumeStub.returns({ uuid: UUID });
       // trigger "del" event
       oper.watcher.emit('del', volumeResource);
       // give event callbacks time to propagate

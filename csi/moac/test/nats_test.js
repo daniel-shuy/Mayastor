@@ -59,6 +59,22 @@ module.exports = function () {
   var eventBus;
   var registry;
   var nc;
+  const sc = nats.StringCodec();
+
+  function connectNats (done) {
+    nats.connect({
+      servers: [`nats://${NATS_EP}`]
+    })
+      .then((res) => {
+        nc = res;
+        done();
+      })
+      .catch(() => {
+        setTimeout(() => {
+          connectNats(done);
+        }, 200);
+      });
+  }
 
   // Create registry, event bus object, nats client and start nat server
   before((done) => {
@@ -67,8 +83,7 @@ module.exports = function () {
     eventBus = new MessageBus(registry, RECONNECT_DELAY);
     startNats(err => {
       if (err) return done(err);
-      nc = nats.connect(`nats://${NATS_EP}`);
-      nc.on('connect', () => done());
+      connectNats(done);
     });
   });
 
@@ -90,10 +105,10 @@ module.exports = function () {
   });
 
   it('should register a node', async () => {
-    nc.publish('register', JSON.stringify({
+    nc.publish('register', sc.encode(JSON.stringify({
       id: NODE_NAME,
       grpcEndpoint: GRPC_ENDPOINT
-    }));
+    })));
     await waitUntil(async () => {
       return registry.getNode(NODE_NAME);
     }, 1000, 'new node');
@@ -103,31 +118,31 @@ module.exports = function () {
   });
 
   it('should ignore register request with missing node name', async () => {
-    nc.publish('register', JSON.stringify({
+    nc.publish('register', sc.encode(JSON.stringify({
       grpcEndpoint: GRPC_ENDPOINT
-    }));
+    })));
     // small delay to wait for a possible crash of moac
     await sleep(10);
   });
 
   it('should ignore register request with missing grpc endpoint', async () => {
-    nc.publish('register', JSON.stringify({
+    nc.publish('register', sc.encode(JSON.stringify({
       id: NODE_NAME
-    }));
+    })));
     // small delay to wait for a possible crash of moac
     await sleep(10);
   });
 
   it('should not crash upon a request with invalid JSON', async () => {
-    nc.publish('register', '{"id": "NODE", "grpcEndpoint": "something"');
+    nc.publish('register', sc.encode('{"id": "NODE", "grpcEndpoint": "something"'));
     // small delay to wait for a possible crash of moac
     await sleep(10);
   });
 
   it('should deregister a node', async () => {
-    nc.publish('deregister', JSON.stringify({
+    nc.publish('deregister', sc.encode(JSON.stringify({
       id: NODE_NAME
-    }));
+    })));
     await waitUntil(async () => {
       return !registry.getNode(NODE_NAME);
     }, 1000, 'node removal');
