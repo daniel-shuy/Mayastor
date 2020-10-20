@@ -41,7 +41,7 @@ let
   buildProps = rec {
     name = "mayastor";
     #cargoSha256 = "0000000000000000000000000000000000000000000000000000";
-    cargoSha256 = "1al1gx0yn37fmp42hgyl9gn9cw91xd93aappdn84j2sa1nd7mgp0";
+    cargoSha256 = "1hinrvfx3yy66j5b7v2ri2n9l0dmka1a4fqrwcg80lvg5k2ygl5q";
     inherit version;
     src = whitelistSource ../../../. [
       "Cargo.lock"
