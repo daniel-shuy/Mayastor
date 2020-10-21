@@ -1792,6 +1792,7 @@ dependencies = [
  "async-trait",
  "dyn-clonable",
  "env_logger",
+ "futures-lite",
  "log",
  "nats",
  "once_cell",
